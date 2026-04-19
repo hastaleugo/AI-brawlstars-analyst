@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-from google import genai
+import google.generativeai as genai
 import aiohttp
 import os
 import asyncio
@@ -13,7 +13,7 @@ import base64
 TOKEN = os.environ.get("DISCORD_TOKEN")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 
-client_genai = genai.Client(api_key=GEMINI_KEY)
+genai.configure(api_key=GEMINI_KEY)
 
 intents = discord.Intents.default()
 intents.message_content = True
