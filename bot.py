@@ -92,7 +92,7 @@ async def analyse(interaction: discord.Interaction, screenshot: discord.Attachme
             async with session.get(screenshot.url) as resp:
                 image_data = await resp.read()
 
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-2.0-flash")
 
         image_part = {
             "inline_data": {
@@ -228,7 +228,7 @@ async def analyse_video(
             )
 
             # Préparation du prompt avec toutes les frames
-            model = genai.GenerativeModel("gemini-1.5-pro")
+            model = genai.GenerativeModel("gemini-2.0-flash")
 
             content_parts = []
             content_parts.append(f"""Tu es un coach esport professionnel spécialisé en Brawl Stars, expert de la scène compétitive EMEA.
