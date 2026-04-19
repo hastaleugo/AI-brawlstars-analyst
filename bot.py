@@ -23,8 +23,9 @@ class CoachBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
-        await self.tree.sync()
-        print("✅ Commandes slash synchronisées !")
+    await self.tree.sync()
+    await self.tree.sync(guild=discord.Object(id=TON_ID_ICI))
+    print("✅ Commandes slash synchronisées !")
 
 bot = CoachBot()
 
