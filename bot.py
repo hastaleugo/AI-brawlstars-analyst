@@ -22,7 +22,7 @@ class CoachBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents)
 
-    async def setup_hook(self):
+async def setup_hook(self):
     await self.tree.sync()
     await self.tree.sync(guild=discord.Object(id=TON_ID_ICI))
     print("✅ Commandes slash synchronisées !")
