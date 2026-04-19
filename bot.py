@@ -24,7 +24,7 @@ class CoachBot(commands.Bot):
 
 async def setup_hook(self):
     await self.tree.sync()
-    await self.tree.sync(guild=discord.Object(id=TON_ID_ICI))
+    await self.tree.sync(guild=discord.Object(id=1489266291004149901))
     print("✅ Commandes slash synchronisées !")
 
 bot = CoachBot()
