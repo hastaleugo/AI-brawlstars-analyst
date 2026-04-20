@@ -9,6 +9,10 @@ import base64
 import tempfile
 import subprocess
 import glob
+# Installation automatique de ffmpeg si absent
+import shutil
+if not shutil.which("ffmpeg"):
+    os.system("apt-get update && apt-get install -y ffmpeg")
 
 TOKEN = os.environ.get("DISCORD_TOKEN")
 GROQ_KEY = os.environ.get("GROQ_API_KEY")
