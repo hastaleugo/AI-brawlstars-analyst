@@ -161,10 +161,10 @@ Un conseil de niveau compétitif qu'un joueur casual ne connaît pas.
 # ─────────────────────────────────────────────
 @bot.tree.command(
     name="analyse_video",
-    description="🎬 Analyse une vidéo de partie complète avec coaching horodaté (max 4 min)"
+    description="🎬 Analyse une partie complète avec coaching horodaté — lien Streamable requis"
 )
 @app_commands.describe(
-    video="Ta vidéo de partie Brawl Stars (MP4, MOV, max 25 Mo)",
+    lien="Ton lien Streamable (ex: https://streamable.com/xxxxx)",
     intervalle="Fréquence d'analyse"
 )
 @app_commands.choices(intervalle=[
@@ -173,37 +173,59 @@ Un conseil de niveau compétitif qu'un joueur casual ne connaît pas.
 ])
 async def analyse_video(
     interaction: discord.Interaction,
-    video: discord.Attachment,
+    lien: str,
     intervalle: app_commands.Choice[int] = None
 ):
     intervalle_val = intervalle.value if intervalle else 10
 
-    if not video.content_type or not video.content_type.startswith("video/"):
-        await interaction.response.send_message("❌ Envoie uniquement une vidéo (MP4, MOV) !", ephemeral=True)
+    if "streamable.com" not in lien:
+        await interaction.response.send_message(
+            "❌ Envoie uniquement un lien Streamable (https://streamable.com/xxxxx) !", 
+            ephemeral=True
+        )
         return
 
-    if video.size > 25 * 1024 * 1024:
-        await interaction.response.send_message("❌ Vidéo trop lourde ! Maximum 25 Mo.", ephemeral=True)
-        return
-
-    await interaction.response.send_message("⏳ **Étape 1/4** — Téléchargement...", ephemeral=True)
+    await interaction.response.send_message("⏳ **Étape 1/4** — Récupération de la vidéo...", ephemeral=True)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         try:
+            # Récupère le vrai lien de la vidéo depuis l'API Streamable
+            video_id = lien.rstrip("/").split("/")[-1]
+            api_url = f"https://api.streamable.com/videos/{video_id}"
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(api_url) as resp:
+                    if resp.status != 200:
+                        await interaction.edit_original_response(content="❌ Lien Streamable invalide ou vidéo privée.")
+                        return
+                    data = await resp.json()
+
+            # Récupère l'URL directe de la vidéo
+            files = data.get("files", {})
+            video_url = None
+            for quality in ["mp4", "mp4-mobile"]:
+                if quality in files and files[quality].get("url"):
+                    video_url = "https:" + files[quality]["url"] if files[quality]["url"].startswith("//") else files[quality]["url"]
+                    break
+
+            if not video_url:
+                await interaction.edit_original_response(content="❌ Impossible de récupérer la vidéo. Est-elle publique ?")
+                return
+
+            await interaction.edit_original_response(content="⏳ **Étape 2/4** — Téléchargement...")
+
             video_path = os.path.join(tmpdir, "game.mp4")
             async with aiohttp.ClientSession() as session:
-                async with session.get(video.url) as resp:
+                async with session.get(video_url) as resp:
                     with open(video_path, "wb") as f:
                         f.write(await resp.read())
 
-            await interaction.edit_original_response(content="⏳ **Étape 2/4** — Vérification...")
+            await interaction.edit_original_response(content="⏳ **Étape 3/4** — Extraction des moments clés...")
 
             duree = get_duration(video_path)
             if duree > 240:
                 await interaction.edit_original_response(content="❌ Vidéo trop longue ! Maximum 4 minutes.")
                 return
-
-            await interaction.edit_original_response(content="⏳ **Étape 3/4** — Extraction des moments clés...")
 
             frames_dir = os.path.join(tmpdir, "frames")
             os.makedirs(frames_dir)
@@ -214,7 +236,7 @@ async def analyse_video(
                 return
 
             await interaction.edit_original_response(
-                content=f"⏳ **Étape 4/4** — Analyse IA de {len(frames)} moments... (peut prendre 1-2 min)"
+                content=f"⏳ **Étape 4/4** — Analyse IA de {len(frames)} moments... (1-2 min)"
             )
 
             client = Groq(api_key=GROQ_KEY)
@@ -222,7 +244,6 @@ async def analyse_video(
             rapport_complet.append(f"🎮 **Partie analysée** — {int(duree//60)}:{int(duree%60):02d} min\n")
             rapport_complet.append("📍 **ANALYSE HORODATÉE**\n")
 
-            # Analyse frame par frame
             for frame in frames:
                 b64 = image_to_b64(frame["path"])
                 try:
@@ -241,21 +262,19 @@ async def analyse_video(
 Cette capture vient d'une partie à [{frame['timestamp']}].
 En 2-3 phrases maximum, identifie UNE erreur OU UN point positif OU UNE opportunité manquée visible.
 Format STRICT : **[{frame['timestamp']}]** ⚠️/✅/💡 [type] : [description courte et précise]
-Si l'image n'est pas claire ou pas de Brawl Stars, écris : **[{frame['timestamp']}]** — Aucun événement notable."""
+Si l'image n'est pas claire, écris : **[{frame['timestamp']}]** — Aucun événement notable."""
                                 }
                             ]
                         }],
                         max_tokens=150
                     )
                     rapport_complet.append(response.choices[0].message.content)
-                    await asyncio.sleep(1)  # évite le rate limit
+                    await asyncio.sleep(1)
                 except Exception:
                     rapport_complet.append(f"**[{frame['timestamp']}]** — Analyse indisponible")
 
             # Synthèse finale
             rapport_complet.append("\n─────────────────────────────────")
-            rapport_complet.append("🎯 **TOP 3 PRIORITÉS À TRAVAILLER**")
-
             synthese = client.chat.completions.create(
                 model="meta-llama/llama-4-scout-17b-16e-instruct",
                 messages=[{
@@ -273,7 +292,6 @@ Termine avec :
             )
             rapport_complet.append(synthese.choices[0].message.content)
 
-            # Envoi en DM
             texte_final = "\n".join(rapport_complet)
             if len(texte_final) <= 4000:
                 embed = discord.Embed(
@@ -299,13 +317,13 @@ Termine avec :
                     await interaction.user.send(embed=embed)
 
             await interaction.edit_original_response(
-                content="✅ Ton rapport de coaching vidéo complet a été envoyé en DM ! 📬"
+                content="✅ Ton rapport de coaching vidéo a été envoyé en DM ! 📬"
             )
 
         except subprocess.CalledProcessError:
-            await interaction.edit_original_response(content="❌ Erreur vidéo. Essaie en MP4.")
+            await interaction.edit_original_response(content="❌ Erreur vidéo. Réessaie.")
         except discord.Forbidden:
-            await interaction.edit_original_response(content="❌ Active tes messages privés dans paramètres Discord !")
+            await interaction.edit_original_response(content="❌ Active tes messages privés Discord !")
         except Exception as e:
             await interaction.edit_original_response(content=f"❌ Erreur : `{str(e)}`")
 
