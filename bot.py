@@ -5,15 +5,13 @@ from groq import Groq
 import aiohttp
 import os
 import asyncio
+import base64
 import tempfile
 import subprocess
 import glob
-import base64
 
 TOKEN = os.environ.get("DISCORD_TOKEN")
 GROQ_KEY = os.environ.get("GROQ_API_KEY")
-
-genai.configure(api_key=GEMINI_KEY)
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -44,8 +42,9 @@ def extraire_frames(video_path, output_dir, intervalle=10):
     cmd = [
         "ffmpeg", "-i", video_path,
         "-vf", f"fps=1/{intervalle}",
-        "-q:v", "2", pattern,
-        "-y", "-loglevel", "error"
+        "-q:v", "5",
+        "-vf", f"fps=1/{intervalle},scale=640:-1",
+        pattern, "-y", "-loglevel", "error"
     ]
     subprocess.run(cmd, check=True)
     frames = []
@@ -92,16 +91,21 @@ async def analyse(interaction: discord.Interaction, screenshot: discord.Attachme
             async with session.get(screenshot.url) as resp:
                 image_data = await resp.read()
 
-        model = genai.GenerativeModel("gemini-2.0-flash")
+        image_b64 = base64.b64encode(image_data).decode("utf-8")
+        client = Groq(api_key=GROQ_KEY)
 
-        image_part = {
-            "inline_data": {
-                "mime_type": screenshot.content_type,
-                "data": base64.b64encode(image_data).decode("utf-8")
-            }
-        }
-
-        prompt = """Tu es un coach esport professionnel spécialisé en Brawl Stars, expert de la scène compétitive EMEA.
+        response = client.chat.completions.create(
+            model="llama-3.2-90b-vision-preview",
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{screenshot.content_type};base64,{image_b64}"}
+                    },
+                    {
+                        "type": "text",
+                        "text": """Tu es un coach esport professionnel spécialisé en Brawl Stars, expert de la scène compétitive EMEA.
 
 Analyse ce screenshot et génère un rapport de coaching détaillé et professionnel.
 
@@ -126,10 +130,13 @@ Un conseil de niveau compétitif qu'un joueur casual ne connaît pas.
 - Niveau estimé : [Débutant / Intermédiaire / Avancé / Semi-pro / Compétitif]
 - Note : [X/10]
 - Priorité : [une phrase]"""
+                    }
+                ]
+            }],
+            max_tokens=1500
+        )
 
-        response = model.generate_content([prompt, image_part])
-        analysis = response.text
-
+        analysis = response.choices[0].message.content
         embed = discord.Embed(
             title="🏆 Rapport de Coaching — Brawl Stars EMEA",
             description=analysis[:4000],
@@ -140,12 +147,11 @@ Un conseil de niveau compétitif qu'un joueur casual ne connaît pas.
             text=f"Analyse privée de {interaction.user.display_name}",
             icon_url=interaction.user.display_avatar.url
         )
-
         await interaction.user.send(embed=embed)
-        await interaction.edit_original_response(
-            content="✅ Ton rapport de coaching a été envoyé en DM ! 📬"
-        )
+        await interaction.edit_original_response(content="✅ Ton rapport de coaching a été envoyé en DM ! 📬")
 
+    except discord.Forbidden:
+        await interaction.edit_original_response(content="❌ Active tes messages privés dans paramètres Discord !")
     except Exception as e:
         await interaction.edit_original_response(content=f"❌ Erreur : `{str(e)}`")
 
@@ -159,10 +165,9 @@ Un conseil de niveau compétitif qu'un joueur casual ne connaît pas.
 )
 @app_commands.describe(
     video="Ta vidéo de partie Brawl Stars (MP4, MOV, max 25 Mo)",
-    intervalle="Fréquence d'analyse (défaut: toutes les 10 secondes)"
+    intervalle="Fréquence d'analyse"
 )
 @app_commands.choices(intervalle=[
-    app_commands.Choice(name="Toutes les 5 secondes (très détaillé)", value=5),
     app_commands.Choice(name="Toutes les 10 secondes (recommandé)", value=10),
     app_commands.Choice(name="Toutes les 20 secondes (résumé rapide)", value=20),
 ])
@@ -174,133 +179,117 @@ async def analyse_video(
     intervalle_val = intervalle.value if intervalle else 10
 
     if not video.content_type or not video.content_type.startswith("video/"):
-        await interaction.response.send_message(
-            "❌ Envoie uniquement une vidéo (MP4, MOV) !", ephemeral=True
-        )
+        await interaction.response.send_message("❌ Envoie uniquement une vidéo (MP4, MOV) !", ephemeral=True)
         return
 
     if video.size > 25 * 1024 * 1024:
-        await interaction.response.send_message(
-            "❌ Vidéo trop lourde ! Maximum 25 Mo.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ Vidéo trop lourde ! Maximum 25 Mo.", ephemeral=True)
         return
 
-    await interaction.response.send_message(
-        "⏳ **Étape 1/4** — Téléchargement de la vidéo...", ephemeral=True
-    )
+    await interaction.response.send_message("⏳ **Étape 1/4** — Téléchargement...", ephemeral=True)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         try:
-            # Téléchargement
             video_path = os.path.join(tmpdir, "game.mp4")
             async with aiohttp.ClientSession() as session:
                 async with session.get(video.url) as resp:
                     with open(video_path, "wb") as f:
                         f.write(await resp.read())
 
-            await interaction.edit_original_response(
-                content="⏳ **Étape 2/4** — Vérification de la vidéo..."
-            )
+            await interaction.edit_original_response(content="⏳ **Étape 2/4** — Vérification...")
 
             duree = get_duration(video_path)
             if duree > 240:
-                await interaction.edit_original_response(
-                    content="❌ Vidéo trop longue ! Maximum 4 minutes."
-                )
+                await interaction.edit_original_response(content="❌ Vidéo trop longue ! Maximum 4 minutes.")
                 return
 
-            await interaction.edit_original_response(
-                content="⏳ **Étape 3/4** — Extraction des moments clés..."
-            )
+            await interaction.edit_original_response(content="⏳ **Étape 3/4** — Extraction des moments clés...")
 
             frames_dir = os.path.join(tmpdir, "frames")
             os.makedirs(frames_dir)
             frames = extraire_frames(video_path, frames_dir, intervalle_val)
 
             if not frames:
-                await interaction.edit_original_response(
-                    content="❌ Impossible d'extraire les frames."
-                )
+                await interaction.edit_original_response(content="❌ Impossible d'extraire les frames.")
                 return
 
             await interaction.edit_original_response(
-                content=f"⏳ **Étape 4/4** — Analyse IA de {len(frames)} moments... (30-60 secondes)"
+                content=f"⏳ **Étape 4/4** — Analyse IA de {len(frames)} moments... (peut prendre 1-2 min)"
             )
 
-            # Préparation du prompt avec toutes les frames
-            model = genai.GenerativeModel("gemini-2.0-flash")
+            client = Groq(api_key=GROQ_KEY)
+            rapport_complet = []
+            rapport_complet.append(f"🎮 **Partie analysée** — {int(duree//60)}:{int(duree%60):02d} min\n")
+            rapport_complet.append("📍 **ANALYSE HORODATÉE**\n")
 
-            content_parts = []
-            content_parts.append(f"""Tu es un coach esport professionnel spécialisé en Brawl Stars, expert de la scène compétitive EMEA.
-
-Je vais t'envoyer {len(frames)} captures extraites d'une vidéo de partie Brawl Stars de {int(duree//60)}:{int(duree%60):02d}.
-Les captures sont prises toutes les {intervalle_val} secondes.
-Chaque image est accompagnée de son timestamp exact.
-
-Génère un rapport de coaching COMPLET, HORODATÉ et PROFESSIONNEL structuré EXACTEMENT ainsi :
-
-─────────────────────────────────
-🎮 **VUE D'ENSEMBLE**
-Mode de jeu, map, brawlers des deux équipes, durée totale, résultat si visible.
-
-─────────────────────────────────
-📍 **ANALYSE HORODATÉE**
-Pour chaque moment important, cite le timestamp exact en gras :
-
-**[Xmin Xsec]** ⚠️ ERREUR : [description précise + pourquoi c'est une erreur]
-**[Xmin Xsec]** ✅ BIEN JOUÉ : [ce qui a été bien fait + pourquoi]
-**[Xmin Xsec]** 💡 OPPORTUNITÉ MANQUÉE : [ce qui aurait pu être fait]
-
-Identifie MINIMUM 6 moments horodatés répartis sur toute la partie.
-
-─────────────────────────────────
-🔄 **PATTERNS RÉCURRENTS**
-Erreurs qui se répètent tout au long de la partie.
-
-─────────────────────────────────
-🎯 **TOP 3 PRIORITÉS**
-Les 3 points les plus importants à travailler avec des exercices concrets.
-
-─────────────────────────────────
-💡 **CONSEIL EXPERT EMEA**
-Un conseil tactique avancé de niveau compétitif sur cette composition/map.
-
-─────────────────────────────────
-📊 **BILAN FINAL**
-- Niveau estimé : [Débutant / Intermédiaire / Avancé / Semi-pro / Compétitif]
-- Note globale : [X/10]
-- Point fort : [une phrase]
-- Point faible : [une phrase]
-- Progression estimée si ces conseils appliqués : [+X trophées/semaine estimés]""")
-
+            # Analyse frame par frame
             for frame in frames:
-                content_parts.append(f"\n⏱️ Timestamp [{frame['timestamp']}] :")
-                content_parts.append({
-                    "inline_data": {
-                        "mime_type": "image/jpeg",
-                        "data": image_to_b64(frame["path"])
-                    }
-                })
+                b64 = image_to_b64(frame["path"])
+                try:
+                    response = client.chat.completions.create(
+                        model="llama-3.2-90b-vision-preview",
+                        messages=[{
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
+                                },
+                                {
+                                    "type": "text",
+                                    "text": f"""Tu es un coach Brawl Stars expert EMEA. 
+Cette capture vient d'une partie à [{frame['timestamp']}].
+En 2-3 phrases maximum, identifie UNE erreur OU UN point positif OU UNE opportunité manquée visible.
+Format STRICT : **[{frame['timestamp']}]** ⚠️/✅/💡 [type] : [description courte et précise]
+Si l'image n'est pas claire ou pas de Brawl Stars, écris : **[{frame['timestamp']}]** — Aucun événement notable."""
+                                }
+                            ]
+                        }],
+                        max_tokens=150
+                    )
+                    rapport_complet.append(response.choices[0].message.content)
+                    await asyncio.sleep(1)  # évite le rate limit
+                except Exception:
+                    rapport_complet.append(f"**[{frame['timestamp']}]** — Analyse indisponible")
 
-            response = model.generate_content(content_parts)
-            analyse_text = response.text
+            # Synthèse finale
+            rapport_complet.append("\n─────────────────────────────────")
+            rapport_complet.append("🎯 **TOP 3 PRIORITÉS À TRAVAILLER**")
 
-            # Envoi en DM — split si trop long
-            if len(analyse_text) <= 4000:
+            synthese = client.chat.completions.create(
+                model="llama-3.2-90b-vision-preview",
+                messages=[{
+                    "role": "user",
+                    "content": f"""Sur la base de cette analyse horodatée d'une partie Brawl Stars :
+
+{chr(10).join(rapport_complet)}
+
+Donne les 3 priorités les plus importantes à travailler avec des conseils concrets. 
+Termine avec :
+📊 Niveau estimé : [niveau]
+⭐ Note globale : [X/10]"""
+                }],
+                max_tokens=400
+            )
+            rapport_complet.append(synthese.choices[0].message.content)
+
+            # Envoi en DM
+            texte_final = "\n".join(rapport_complet)
+            if len(texte_final) <= 4000:
                 embed = discord.Embed(
                     title="🎬 Rapport de Coaching Vidéo — Brawl Stars EMEA",
-                    description=analyse_text,
+                    description=texte_final,
                     color=0xFFD700
                 )
                 embed.set_footer(
-                    text=f"Analyse privée de {interaction.user.display_name} • {int(duree//60)}:{int(duree%60):02d}",
+                    text=f"Analyse privée de {interaction.user.display_name}",
                     icon_url=interaction.user.display_avatar.url
                 )
                 await interaction.user.send(embed=embed)
             else:
-                parties = [analyse_text[i:i+4000] for i in range(0, len(analyse_text), 4000)]
+                parties = [texte_final[i:i+4000] for i in range(0, len(texte_final), 4000)]
                 for idx, partie in enumerate(parties):
-                    titre = "🎬 Rapport de Coaching Vidéo — Brawl Stars EMEA" if idx == 0 else f"🎬 Suite du rapport ({idx+1}/{len(parties)})"
+                    titre = "🎬 Rapport de Coaching Vidéo — Brawl Stars EMEA" if idx == 0 else f"🎬 Suite ({idx+1}/{len(parties)})"
                     embed = discord.Embed(title=titre, description=partie, color=0xFFD700)
                     if idx == len(parties) - 1:
                         embed.set_footer(
@@ -314,17 +303,11 @@ Un conseil tactique avancé de niveau compétitif sur cette composition/map.
             )
 
         except subprocess.CalledProcessError:
-            await interaction.edit_original_response(
-                content="❌ Erreur vidéo. Format non supporté ? Essaie en MP4."
-            )
+            await interaction.edit_original_response(content="❌ Erreur vidéo. Essaie en MP4.")
         except discord.Forbidden:
-            await interaction.edit_original_response(
-                content="❌ Je ne peux pas t'envoyer de DM ! Active les messages privés dans tes paramètres Discord."
-            )
+            await interaction.edit_original_response(content="❌ Active tes messages privés dans paramètres Discord !")
         except Exception as e:
-            await interaction.edit_original_response(
-                content=f"❌ Erreur : `{str(e)}`"
-            )
+            await interaction.edit_original_response(content=f"❌ Erreur : `{str(e)}`")
 
 
 # ─────────────────────────────────────────────
@@ -357,22 +340,21 @@ async def aide(interaction: discord.Interaction):
         name="🎬 /analyse_video — Partie complète",
         value=(
             "Attache une vidéo MP4 (max 4 min, 25 Mo)\n"
-            "→ Rapport horodaté complet envoyé en DM privé\n"
-            "Exemple : **[1:37]** ⚠️ Mauvais positionnement sur le gem spawn"
+            "→ Rapport horodaté complet envoyé en DM\n"
+            "Exemple : **[1:30]** ⚠️ Mauvais positionnement"
         ),
         inline=False
     )
     embed.add_field(
         name="⚠️ Important",
         value=(
-            "• Tes analyses sont **100% privées** — seul toi les vois en DM\n"
-            "• Active tes **messages privés** dans paramètres Discord\n"
-            "• Vidéo en **MP4** pour meilleurs résultats\n"
-            "• Si vidéo trop lourde : compresse sur **handbrake.fr**"
+            "• Analyses **100% privées** en DM\n"
+            "• Active tes **messages privés** Discord\n"
+            "• Vidéo en **MP4**, max 25 Mo"
         ),
         inline=False
     )
-    embed.set_footer(text="Coach IA EMEA • Powered by Gemini AI • 100% Gratuit")
+    embed.set_footer(text="Coach IA EMEA • Powered by Groq AI • 100% Gratuit")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 bot.run(TOKEN)
