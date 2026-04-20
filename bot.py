@@ -95,7 +95,7 @@ async def analyse(interaction: discord.Interaction, screenshot: discord.Attachme
         client = Groq(api_key=GROQ_KEY)
 
         response = client.chat.completions.create(
-            model="llama-3.2-90b-vision-preview",
+            model="llama-3.2-11b-vision-preview",
             messages=[{
                 "role": "user",
                 "content": [
@@ -227,7 +227,7 @@ async def analyse_video(
                 b64 = image_to_b64(frame["path"])
                 try:
                     response = client.chat.completions.create(
-                        model="llama-3.2-90b-vision-preview",
+                        model="llama-3.2-11b-vision-preview",
                         messages=[{
                             "role": "user",
                             "content": [
